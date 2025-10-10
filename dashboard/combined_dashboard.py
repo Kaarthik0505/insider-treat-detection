@@ -50,10 +50,20 @@ G = build_graph()
 def get_at_risk_subgraph(G, attrs):
     high_risk_nodes = {n for n, v in attrs.items() if v['high_risk']}
     connected_nodes = set()
+
     for node in high_risk_nodes:
+        if node not in G:
+            # Skip users who are not yet in the network
+            continue
         connected_nodes.add(node)
         connected_nodes.update(G.neighbors(node))
+
+    # If no valid nodes found, return an empty graph
+    if not connected_nodes:
+        return nx.Graph()
+
     return G.subgraph(connected_nodes).copy()
+
 
 # === ✅ UPDATED TABS (Added Adaptive Learning Tab) ===
 anomaly_tab, user_tab, graph_tab, adaptive_tab, how_tab = st.tabs([
