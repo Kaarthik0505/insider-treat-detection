@@ -253,7 +253,7 @@ with adaptive_tab:
                     files_accessed=first_user.get("files_per_day", 20),
                     flag=int(first_user.get("is_red_team", 0))
                 )
-            st.experimental_rerun()
+            st.rerun()
 
     except Exception as e:
         st.error(f"Error loading users: {e}")
