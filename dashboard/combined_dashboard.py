@@ -6,7 +6,6 @@ import os
 from adaptive_model.adaptive_training import retrain_with_new_user
 
 
-
 DATA_DIR = 'data'
 
 st.set_page_config(layout="wide")
@@ -182,6 +181,13 @@ with adaptive_tab:
 
     if st.button("📥 Add User and Retrain Model"):
         st.info("Adding new user data and retraining model...")
+        result = retrain_model(user_id, login_freq, files_accessed, flag)
+        st.success("✅ Model retrained successfully!")
+
+        st.write("### 🔍 Updated Model Performance:")
+        st.json(result)
+    if st.button("📥 Add User and Retrain Model"):
+        st.info("Adding new user data and retraining model...")
         result = retrain_with_new_user({
     "user": user_id,
     "mean_login_hour": login_freq,
@@ -192,10 +198,10 @@ with adaptive_tab:
 })
 
 
-        st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
+    st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
 
-        st.write("### 🔍 Updated Model Performance:")
-        st.json(result)
+    st.write("### 🔍 Updated Model Performance:")
+    st.json(result)
 
 # === 🧠 ADAPTIVE LEARNING TAB END ===
 
