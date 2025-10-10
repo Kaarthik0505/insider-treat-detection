@@ -182,19 +182,31 @@ with adaptive_tab:
             st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
 
             if not features_df.empty:
-                first_user = features_df.iloc[0]
-                new_user_dict = {
-                    "user": first_user.get("user"),
-                    "mean_login_hour": first_user.get("mean_login_hour", 9.0),
-                    "files_per_day": first_user.get("files_per_day", 20),
-                    "usb_per_day": first_user.get("usb_per_day", 0),
-                    "emails_per_day": first_user.get("emails_per_day", 0),
-                    "is_red_team": int(first_user.get("is_red_team", 0))
-                }
-                result = retrain_with_new_user(new_user_dict)
+                # 🔁 Retrain using existing data, not by adding a new row
+                from adaptive_model.adaptive_training import _train_and_save_models
+                import numpy as np
+
+                X = features_df.drop(columns=[c for c in ['user', 'is_red_team'] if c in features_df.columns], errors='ignore')
+                iso_scores, svm_scores, auto_recon = _train_and_save_models(X)
+
+                scores_df = pd.DataFrame({
+                    'user': features_df['user'],
+                    'is_red_team': features_df.get('is_red_team', np.zeros(len(features_df))),
+                    'isolation_forest': iso_scores,
+                    'oneclass_svm': svm_scores,
+                    'autoencoder': auto_recon
+                })
+
+                from sklearn.preprocessing import MinMaxScaler
+                scaler = MinMaxScaler()
+                score_cols = ['isolation_forest', 'oneclass_svm', 'autoencoder']
+                scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
+                scores_df['aggregated_score'] = scores_df[score_cols].mean(axis=1)
+                scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
+
                 st.success("✅ Model retrained successfully after deletion.")
-                st.json(result)
             st.rerun()
+
     except Exception as e:
         st.error(f"Error loading users: {e}")
 
