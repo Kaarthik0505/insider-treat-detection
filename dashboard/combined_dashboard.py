@@ -6,6 +6,7 @@ import os
 from adaptive_model.adaptive_training import retrain_with_new_user
 
 
+
 DATA_DIR = 'data'
 
 st.set_page_config(layout="wide")
@@ -181,7 +182,15 @@ with adaptive_tab:
 
     if st.button("📥 Add User and Retrain Model"):
         st.info("Adding new user data and retraining model...")
-        result = retrain_with_new_user(user_id, login_freq, files_accessed, flag)
+        result = retrain_with_new_user({
+    "user": user_id,
+    "mean_login_hour": login_freq,
+    "files_per_day": files_accessed,
+    "usb_per_day": 0,
+    "emails_per_day": 0,
+    "is_red_team": flag
+})
+
 
         st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
 
