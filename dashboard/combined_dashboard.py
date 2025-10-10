@@ -194,8 +194,9 @@ with graph_tab:
 # === 🧠 Adaptive Learning Tab ===
 with adaptive_tab:
     st.header("🧠 Adaptive Learning Module")
-    st.write("### Add New User Data")
 
+    # --- Add User Section ---
+    st.subheader("➕ Add New User Data")
     user_id = st.text_input("Enter User ID (e.g., user_101)")
     login_freq = st.number_input("Average Login Hour", min_value=0.0, max_value=24.0, value=9.0)
     files_accessed = st.number_input("Files Accessed Per Day", min_value=0, max_value=1000, value=20)
@@ -220,15 +221,43 @@ with adaptive_tab:
             st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
             st.write("### 🔍 Updated Model Performance:")
             st.json(result)
-
-            # Auto-refresh dashboard
             st.experimental_rerun()
+
+    # --- Remove User Section ---
+    st.subheader("🗑 Remove Existing User")
+    try:
+        users_list = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))["user"].tolist()
+        user_to_remove = st.selectbox("Select User to Remove", users_list)
+
+        if st.button("🚫 Remove Selected User"):
+            features_df = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))
+            scores_df = pd.read_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"))
+
+            if user_to_remove in features_df["user"].values:
+                features_df = features_df[features_df["user"] != user_to_remove]
+                features_df.to_csv(os.path.join(DATA_DIR, "merged_features.csv"), index=False)
+
+            if user_to_remove in scores_df["user"].values:
+                scores_df = scores_df[scores_df["user"] != user_to_remove]
+                scores_df.to_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"), index=False)
+
+            st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
+
+            # retrain after deletion
+            if not features_df.empty:
+                remaining_user = features_df.iloc[0].to_dict()
+                retrain_with_new_user(remaining_user)
+            st.experimental_rerun()
+    except Exception as e:
+        st.error(f"Error loading users: {e}")
 
 
 # === ℹ️ How Tab ===
 with how_tab:
     st.header('How Does It Work?')
     st.markdown('''
+
+
                 
 ## System Overview
 This system detects insider threats by analyzing user behavior, system access, and relationships using advanced machine learning and graph analysis techniques.
