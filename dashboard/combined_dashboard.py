@@ -3,6 +3,8 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import os
+from adaptive_model.adaptive_training import retrain_model
+
 
 DATA_DIR = 'data'
 
@@ -53,8 +55,10 @@ def get_at_risk_subgraph(G, attrs):
         connected_nodes.update(G.neighbors(node))
     return G.subgraph(connected_nodes).copy()
 
-# Tabs
-anomaly_tab, user_tab, graph_tab, how_tab = st.tabs(["Anomaly Table", "User Detail", "At-Risk Graph", "How Does It Work?"])
+# === ✅ UPDATED TABS (Added Adaptive Learning Tab) ===
+anomaly_tab, user_tab, graph_tab, adaptive_tab, how_tab = st.tabs([
+    "Anomaly Table", "User Detail", "At-Risk Graph", "Adaptive Learning", "How Does It Work?"
+])
 
 with anomaly_tab:
     st.header('User Anomaly Scores')
@@ -124,9 +128,32 @@ with graph_tab:
     net.save_graph('dashboard/graph.html')
     st.components.v1.html(open('dashboard/graph.html', 'r', encoding='utf-8').read(), height=900, scrolling=False)
 
+# === 🧠 ADAPTIVE LEARNING TAB START ===
+from adaptive_model.adaptive_training import retrain_model
+
+with adaptive_tab:
+    st.header("🧠 Adaptive Learning Module")
+
+    st.write("### Add New User Data (Judge Simulation)")
+    user_id = st.text_input("Enter User ID (e.g., user_101)")
+    login_freq = st.number_input("Login Frequency", min_value=0, max_value=100, value=10)
+    files_accessed = st.number_input("Files Accessed", min_value=0, max_value=500, value=20)
+    suspicious_activity = st.selectbox("Suspicious Behavior?", ["No", "Yes"])
+
+    flag = 1 if suspicious_activity == "Yes" else 0
+
+    if st.button("📥 Add User and Retrain Model"):
+        st.info("Adding new user data and retraining model...")
+        result = retrain_model(user_id, login_freq, files_accessed, flag)
+        st.success("✅ Model retrained successfully!")
+        st.write("### 🔍 Updated Model Performance:")
+        st.json(result)
+# === 🧠 ADAPTIVE LEARNING TAB END ===
+
 with how_tab:
     st.header('How Does It Work?')
     st.markdown('''
+
 ## System Overview
 This system detects insider threats by analyzing user behavior, system access, and relationships using advanced machine learning and graph analysis techniques.
 
