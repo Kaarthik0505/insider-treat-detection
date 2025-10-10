@@ -17,10 +17,12 @@ X = df.drop(['user', 'is_red_team'], axis=1)
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
+
 # Isolation Forest
 iso = IsolationForest(contamination=0.1, random_state=42)
 iso.fit(X_scaled)
-iso_scores = -iso.score_samples(X_scaled)
+iso_scores = -iso.score_samples(X_scaled)    # keeps previous behaviour
+
 joblib.dump(iso, os.path.join(MODEL_DIR, 'isolation_forest.pkl'))
 
 # One-Class SVM
@@ -35,13 +37,24 @@ auto.fit(X_scaled, X_scaled)
 auto_recon = np.mean((X_scaled - auto.predict(X_scaled))**2, axis=1)
 joblib.dump(auto, os.path.join(MODEL_DIR, 'autoencoder.pkl'))
 
-# Save anomaly scores
-scores = pd.DataFrame({
+# ------------------------------------------
+# NORMALIZE SCORES to 0-1 (so scales are consistent)
+from sklearn.preprocessing import MinMaxScaler
+scores_df = pd.DataFrame({
     'user': df['user'],
     'is_red_team': df['is_red_team'],
     'isolation_forest': iso_scores,
     'oneclass_svm': svm_scores,
     'autoencoder': auto_recon
 })
-scores.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
-print('Models trained and scores saved to data/anomaly_scores.csv') 
+
+scaler = MinMaxScaler()
+scores_cols = ['isolation_forest', 'oneclass_svm', 'autoencoder']
+scores_df[scores_cols] = scaler.fit_transform(scores_df[scores_cols])
+
+# Create aggregated score as the mean of normalized methods (you can weight if desired)
+scores_df['aggregated_score'] = scores_df[scores_cols].mean(axis=1)
+
+# Save normalized scores
+scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
+print('Models trained, normalized scores saved to data/anomaly_scores.csv')

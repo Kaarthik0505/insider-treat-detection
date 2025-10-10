@@ -3,7 +3,7 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import os
-from adaptive_model.adaptive_training import retrain_model
+from adaptive_model.adaptive_training import retrain_with_new_user
 
 
 DATA_DIR = 'data'
@@ -76,9 +76,27 @@ with anomaly_tab:
     df['Red Team'] = df['is_red_team_x'].apply(lambda x: '🚩' if x == 1 else '') if 'is_red_team_x' in df.columns else df['is_red_team'].apply(lambda x: '🚩' if x == 1 else '')
     df['rank'] = df[score_method].rank(ascending=False)
     df_sorted = df.sort_values(score_method, ascending=False)
-    cols = ['user', 'Red Team', score_method, 'rank'] + [c for c in df.columns if c not in ['user', score_method, 'rank', 'Red Team']]
+
+    # === 🧠 Dynamic Risk Banding Logic ===
+    df_sorted['score'] = df_sorted[score_method]
+    high_risk_threshold = df_sorted['score'].quantile(0.90)
+    medium_risk_threshold = df_sorted['score'].quantile(0.70)
+
+    def assign_risk_band(score):
+        if score >= high_risk_threshold:
+            return '🔴 High Risk'
+        elif score >= medium_risk_threshold:
+            return '🟡 Medium Risk'
+        else:
+            return '🟢 Low Risk'
+
+    df_sorted['Risk Level'] = df_sorted['score'].apply(assign_risk_band)
+    # === End Dynamic Logic ===
+
+    cols = ['user', 'Red Team', 'Risk Level', score_method, 'rank'] + [c for c in df.columns if c not in ['user', score_method, 'rank', 'Red Team', 'Risk Level']]
     st.dataframe(df_sorted[cols], height=500)
-    st.subheader('Top 5 Anomalous Users')
+
+    st.subheader('Top 5 High-Risk Users')
     top5 = df_sorted.head(5)
     st.bar_chart(top5.set_index('user')[score_method])
 
@@ -87,6 +105,7 @@ with user_tab:
     selected_user = st.selectbox('Select User', df_sorted['user'], key='user_detail')
     user_row = df_sorted[df_sorted['user'] == selected_user].iloc[0]
     st.write('**Red Team:**', '🚩' if user_row['Red Team'] else 'No')
+    st.write('**Risk Level:**', user_row['Risk Level'])
     st.write('**Features:**')
     st.json({k: user_row[k] for k in ['mean_login_hour', 'mean_logout_hour', 'files_per_day', 'usb_per_day', 'emails_per_day', 'out_of_session_access', 'degree_centrality', 'betweenness_centrality', 'keyword_flag', 'subject_len', 'sentiment'] if k in user_row})
     st.write('**Anomaly Scores:**')
@@ -162,16 +181,19 @@ with adaptive_tab:
 
     if st.button("📥 Add User and Retrain Model"):
         st.info("Adding new user data and retraining model...")
-        result = retrain_model(user_id, login_freq, files_accessed, flag)
-        st.success("✅ Model retrained successfully!")
+        result = retrain_with_new_user(user_id, login_freq, files_accessed, flag)
+
+        st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
 
         st.write("### 🔍 Updated Model Performance:")
         st.json(result)
+
 # === 🧠 ADAPTIVE LEARNING TAB END ===
 
 with how_tab:
     st.header('How Does It Work?')
     st.markdown('''
+
 
 ## System Overview
 This system detects insider threats by analyzing user behavior, system access, and relationships using advanced machine learning and graph analysis techniques.
