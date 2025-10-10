@@ -84,8 +84,16 @@ with user_tab:
 
 with graph_tab:
     st.header('At-Risk Nodes and Their Connections')
-    subG = get_at_risk_subgraph(G, attrs)
+
+    try:
+        subG = get_at_risk_subgraph(G, attrs)
+    except nx.NetworkXError as e:
+        st.warning("⚠️ Some new users are not yet part of the graph. Rebuilding network...")
+        G = build_graph()  # rebuilds the full graph
+        subG = get_at_risk_subgraph(G, attrs)
+
     net = Network(height='900px', width='100%', notebook=False, bgcolor='#222222', font_color='white')
+
     net.barnes_hut(gravity=-2000, central_gravity=0.1, spring_length=200, spring_strength=0.01, damping=0.85, overlap=1)
     net.set_options('''
     var options = {
@@ -146,6 +154,7 @@ with adaptive_tab:
         st.info("Adding new user data and retraining model...")
         result = retrain_model(user_id, login_freq, files_accessed, flag)
         st.success("✅ Model retrained successfully!")
+
         st.write("### 🔍 Updated Model Performance:")
         st.json(result)
 # === 🧠 ADAPTIVE LEARNING TAB END ===
