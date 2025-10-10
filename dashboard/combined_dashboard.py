@@ -244,10 +244,17 @@ with adaptive_tab:
             st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
 
             # retrain after deletion
+            # ✅ Retrain model using first remaining user's profile
             if not features_df.empty:
-                remaining_user = features_df.iloc[0].to_dict()
-                retrain_with_new_user(remaining_user)
+                first_user = features_df.iloc[0]
+                retrain_with_new_user(
+                    user_id=first_user["user"],
+                    login_freq=first_user.get("mean_login_hour", 9.0),
+                    files_accessed=first_user.get("files_per_day", 20),
+                    flag=int(first_user.get("is_red_team", 0))
+                )
             st.experimental_rerun()
+
     except Exception as e:
         st.error(f"Error loading users: {e}")
 
