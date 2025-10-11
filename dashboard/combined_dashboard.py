@@ -1,16 +1,15 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import streamlit as st
 import pandas as pd
-import networkx as nx
-from pyvis.network import Network
-import os
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from adaptive_model.adaptive_training import retrain_with_new_user, _train_and_save_models
+from adaptive_model.adaptive_training import retrain_with_new_user
 
 DATA_DIR = 'data'
 
 st.set_page_config(layout="wide")
 st.title('AI-Powered Insider Threat Detection: Combined Dashboard')
+
 
 # -------------------- LOAD DATA --------------------
 def load_all_data():
@@ -20,81 +19,49 @@ def load_all_data():
     usb_usage = pd.read_csv(os.path.join(DATA_DIR, 'usb_usage.csv'), parse_dates=['plug_time', 'unplug_time'])
     return features, scores, file_access, usb_usage
 
+
 features, scores, file_access, usb_usage = load_all_data()
 df = pd.merge(features, scores, on='user')
 
-# -------------------- GRAPH HELPERS --------------------
-def get_node_attrs():
-    attrs = {}
-    for _, row in scores.iterrows():
-        anomaly = max(row['isolation_forest'], row['oneclass_svm'], row['autoencoder'])
-        red_team = row['is_red_team']
-        attrs[row['user']] = {
-            'anomaly': anomaly,
-            'red_team': red_team,
-            'high_risk': (anomaly > 1.0) or (red_team == 1)
-        }
-    return attrs
 
-attrs = get_node_attrs()
+# -------------------- ANOMALY HELPERS --------------------
+def assign_risk_band(score, high_risk_threshold, medium_risk_threshold):
+    if score >= high_risk_threshold:
+        return '🔴 High Risk'
+    elif score >= medium_risk_threshold:
+        return '🟡 Medium Risk'
+    else:
+        return '🟢 Low Risk'
 
-def build_graph():
-    G = nx.Graph()
-    for _, row in file_access.iterrows():
-        G.add_edge(row['user'], row['file'], type='access')
-    for _, row in usb_usage.iterrows():
-        G.add_edge(row['user'], row['device'], type='usb')
-    return G
-
-G = build_graph()
-
-def get_at_risk_subgraph(G, attrs):
-    high_risk_nodes = {n for n, v in attrs.items() if v['high_risk']}
-    connected_nodes = set()
-    for node in high_risk_nodes:
-        if node not in G:
-            continue
-        connected_nodes.add(node)
-        connected_nodes.update(G.neighbors(node))
-    if not connected_nodes:
-        return nx.Graph()
-    return G.subgraph(connected_nodes).copy()
 
 # -------------------- DASHBOARD TABS --------------------
-anomaly_tab, user_tab, graph_tab, adaptive_tab, how_tab = st.tabs([
-    "Anomaly Table", "User Detail", "At-Risk Graph", "Adaptive Learning", "How Does It Work?"
+anomaly_tab, user_tab, adaptive_tab = st.tabs([
+    "Anomaly Table", "User Detail", "Adaptive Learning"
 ])
+
 
 # === ANOMALY TABLE ===
 with anomaly_tab:
     st.header('User Anomaly Scores')
-    score_method = st.selectbox('Select Model', ['isolation_forest', 'oneclass_svm', 'autoencoder'])
-    df['Red Team'] = df['is_red_team_x'].apply(lambda x: '🚩' if x == 1 else '') if 'is_red_team_x' in df.columns else df['is_red_team'].apply(lambda x: '🚩' if x == 1 else '')
+    score_method = 'isolation_forest'  # Fixed to isolation_forest only
     df['rank'] = df[score_method].rank(ascending=False)
     df_sorted = df.sort_values(score_method, ascending=False)
     df_sorted['score'] = df_sorted[score_method]
     high_risk_threshold = df_sorted['score'].quantile(0.90)
     medium_risk_threshold = df_sorted['score'].quantile(0.70)
-
-    def assign_risk_band(score):
-        if score >= high_risk_threshold:
-            return '🔴 High Risk'
-        elif score >= medium_risk_threshold:
-            return '🟡 Medium Risk'
-        else:
-            return '🟢 Low Risk'
-
-    df_sorted['Risk Level'] = df_sorted['score'].apply(assign_risk_band)
-    st.dataframe(df_sorted[['user', 'Red Team', 'Risk Level', score_method, 'rank']], height=500)
+    df_sorted['Risk Level'] = df_sorted['score'].apply(
+        lambda score: assign_risk_band(score, high_risk_threshold, medium_risk_threshold)
+    )
+    st.dataframe(df_sorted[['user', 'Risk Level', score_method, 'rank']], height=500)
     st.subheader('Top 5 High-Risk Users')
     st.bar_chart(df_sorted.head(5).set_index('user')[score_method])
 
-# === USER DETAIL ===
+
+# === USER DETAIL TAB ===
 with user_tab:
     st.header('User Detail')
     selected_user = st.selectbox('Select User', df_sorted['user'])
     user_row = df_sorted[df_sorted['user'] == selected_user].iloc[0]
-    st.write('**Red Team:**', '🚩' if user_row['Red Team'] else 'No')
     st.write('**Risk Level:**', user_row['Risk Level'])
     st.write('**Features:**')
     st.json({k: user_row[k] for k in [
@@ -102,94 +69,39 @@ with user_tab:
         'emails_per_day', 'out_of_session_access', 'degree_centrality',
         'betweenness_centrality', 'keyword_flag', 'subject_len', 'sentiment'
     ] if k in user_row})
-    st.write('**Anomaly Scores:**')
-    st.json({k: user_row[k] for k in ['isolation_forest', 'oneclass_svm', 'autoencoder']})
+    st.write('**Anomaly Score (Isolation Forest):**')
+    st.json({'isolation_forest': user_row['isolation_forest']})
 
-# === GRAPH TAB ===
-with graph_tab:
-    st.header('At-Risk Nodes and Their Connections')
-    try:
-        subG = get_at_risk_subgraph(G, attrs)
-    except nx.NetworkXError:
-        st.warning("⚠️ Rebuilding network...")
-        G = build_graph()
-        subG = get_at_risk_subgraph(G, attrs)
-
-    net = Network(height='900px', width='100%', bgcolor='#222', font_color='white')
-    net.barnes_hut(gravity=-2000)
-    for node in subG.nodes():
-        if node in attrs:
-            score = attrs[node]['anomaly']
-            red = attrs[node]['red_team']
-            color = 'red' if red else ('orange' if score > 1.5 else 'yellow' if score > 1.0 else 'lightblue')
-            size = 30 if red else (20 if score > 1.5 else 10)
-            title = f"User: {node}<br>Score: {score:.2f}"
-        elif str(node).startswith('file'):
-            color, size, title = 'green', 8, f"File: {node}"
-        elif str(node).startswith('usb'):
-            color, size, title = 'purple', 8, f"Device: {node}"
-        else:
-            color, size, title = 'gray', 8, str(node)
-        net.add_node(node, label=str(node), color=color, size=size, title=title)
-    for e in subG.edges(data=True):
-        net.add_edge(e[0], e[1], color='gray' if e[2]['type'] == 'access' else 'purple')
-    net.save_graph('dashboard/graph.html')
-    st.components.v1.html(open('dashboard/graph.html').read(), height=900)
 
 # === ADAPTIVE LEARNING TAB ===
 with adaptive_tab:
-    # --- Add User Section ---
+    st.header("🧠 Adaptive Learning Module")
+
+    # Add User
     st.subheader("➕ Add New User Data")
+    user_id = st.text_input("Enter User ID (e.g., user_101)")
+    login_freq = st.number_input("Average Login Hour", min_value=0.0, max_value=24.0, value=9.0)
+    files_accessed = st.number_input("Files Accessed Per Day", min_value=0, max_value=1000, value=20)
+    usb_count = st.number_input("USB Devices Used Per Day", min_value=0, max_value=50, value=0)
+    email_count = st.number_input("Emails Sent Per Day", min_value=0, max_value=500, value=0)
 
-    with st.form("add_user_form"):
-        user_id = st.text_input("Enter User ID (e.g., user_101)")
-        login_freq = st.number_input("Average Login Hour", min_value=0.0, max_value=24.0, value=9.0)
-        files_accessed = st.number_input("Files Accessed Per Day", min_value=0, max_value=1000, value=20)
-        usb_usage = st.number_input("USB Connections Per Day", min_value=0, max_value=50, value=0)
-        emails_sent = st.number_input("Emails Sent Per Day", min_value=0, max_value=500, value=0)
-
-        submitted = st.form_submit_button("📥 Add User and Retrain Model")
-
-    if submitted:
-        if user_id.strip() == "":
+    if st.button("📥 Add User and Retrain Model"):
+        if not user_id.strip():
             st.error("❌ Please enter a valid user ID.")
         else:
             st.info("Adding new user data and retraining model...")
-
             result = retrain_with_new_user({
                 "user": user_id,
                 "mean_login_hour": login_freq,
                 "files_per_day": files_accessed,
-                "usb_per_day": usb_usage,
-                "emails_per_day": emails_sent,
-                "is_red_team": 0
+                "usb_per_day": usb_count,
+                "emails_per_day": email_count,
             })
-
             st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
-            st.write("### 🔍 Updated Model Performance:")
             st.json(result)
-
-            updated_scores = pd.read_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"))
-            if user_id in updated_scores["user"].values:
-                user_row = updated_scores[updated_scores["user"] == user_id].iloc[0]
-                score = user_row["aggregated_score"]
-                q90 = result["q90"]
-                q70 = result["q70"]
-
-                if score >= q90:
-                    risk = "🔴 High Risk"
-                elif score >= q70:
-                    risk = "🟡 Medium Risk"
-                else:
-                    risk = "🟢 Low Risk"
-
-                st.markdown(f"### 🚨 New User `{user_id}` Risk Prediction: **{risk}**")
-                st.progress(float(score))
-
-            st.success("✅ Dashboard and Anomaly Table updated successfully!")
             st.rerun()
 
-    # --- Remove User Section ---
+    # Remove User
     st.subheader("🗑 Remove Existing User")
     try:
         users_list = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))["user"].tolist()
@@ -208,103 +120,26 @@ with adaptive_tab:
             st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
 
             if not features_df.empty:
-                X = features_df.drop(columns=[c for c in ['user', 'is_red_team'] if c in features_df.columns], errors='ignore')
-                iso_scores, svm_scores, auto_recon = _train_and_save_models(X)
+                from adaptive_model.adaptive_training import _train_and_save_models
+                import numpy as np
+
+                X = features_df.drop(columns=[c for c in ['user'] if c in features_df.columns], errors='ignore')
+                iso_scores, _, _ = _train_and_save_models(X)  # only use isolation forest returned scores
 
                 scores_df = pd.DataFrame({
                     'user': features_df['user'],
-                    'is_red_team': features_df.get('is_red_team', np.zeros(len(features_df))),
-                    'isolation_forest': iso_scores,
-                    'oneclass_svm': svm_scores,
-                    'autoencoder': auto_recon
+                    'isolation_forest': iso_scores
                 })
 
+                from sklearn.preprocessing import MinMaxScaler
                 scaler = MinMaxScaler()
-                score_cols = ['isolation_forest', 'oneclass_svm', 'autoencoder']
+                score_cols = ['isolation_forest']
                 scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
                 scores_df['aggregated_score'] = scores_df[score_cols].mean(axis=1)
                 scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
 
+                st.success("✅ Model retrained successfully after deletion.")
             st.rerun()
 
     except Exception as e:
         st.error(f"Error loading users: {e}")
-
-# === HOW TAB ===
-with how_tab:
-    st.header('How Does It Work?')
-    st.markdown('''
-    - Uses multiple ML models (Isolation Forest, One-Class SVM, Autoencoder)
-    - Combines anomaly scores and flags high-risk users
-    - Adaptive learning allows retraining when new user data arrives
-    - Graph shows relationships among at-risk users and assets
-
-    The dashboard dynamically updates anomaly scores using Isolation Forest, One-Class SVM, and Autoencoder models.
-    Adding or removing a user automatically retrains models and rescales risk thresholds.
-
-
-
-
-                
-## System Overview
-This system detects insider threats by analyzing user behavior, system access, and relationships using advanced machine learning and graph analysis techniques.
-
----
-
-### 1. **Data Simulation & Feature Engineering**
-- **Simulated Logs:** The system generates synthetic logs for user logins, file access, USB usage, and emails, mimicking real organizational activity.
-- **Feature Engineering:** Extracts features such as:
-    - Login/logout patterns (mean hours, frequency)
-    - File/USB/email activity rates
-    - Out-of-session file access
-    - Graph centrality (degree, betweenness)
-    - NLP features from email subjects (keyword flags, length)
-
----
-
-### 2. **Anomaly Detection Algorithms**
-- **Isolation Forest**
-    - *Mathematics:* Randomly partitions data to isolate points. Anomalies are isolated faster (shorter average path length in trees).
-    - *Computer Science:* Ensemble of binary trees; each tree splits on random features/values. The anomaly score is based on the average path length to isolate a sample.
-- **One-Class SVM**
-    - *Mathematics:* Finds a boundary in feature space that encloses most data (support vectors). Points outside are anomalies.
-    - *Computer Science:* Uses kernel methods (e.g., RBF) to map data to high-dimensional space and find a maximal margin hyperplane.
-- **Autoencoder**
-    - *Mathematics:* Neural network learns to compress and reconstruct input. High reconstruction error indicates anomaly.
-    - *Computer Science:* Trains a feedforward neural network (MLP) to minimize reconstruction loss (MSE) between input and output.
-
----
-
-### 3. **Graph Analysis**
-- **Entity Graph:** Users, files, and devices are nodes; edges represent access or usage.
-- **Centrality Measures:**
-    - *Degree Centrality:* Number of connections (activity level).
-    - *Betweenness Centrality:* Frequency a node lies on shortest paths (potential for information flow/control).
-- **At-Risk Subgraph:** Focuses on high-risk users and their direct connections for visualization and investigation.
-
----
-
-### 4. **Explainability**
-- **SHAP (SHapley Additive exPlanations):**
-    - *Mathematics:* Based on cooperative game theory; attributes model output to each feature by averaging over all possible feature orderings.
-    - *Computer Science:* Computes feature importances for each prediction, helping analysts understand why a user is flagged.
-- **LIME (Local Interpretable Model-agnostic Explanations):**
-    - *Mathematics:* Fits a simple, interpretable model locally around a prediction to approximate the complex model.
-    - *Computer Science:* Perturbs input data and observes output changes to estimate feature influence (not supported for Isolation Forest, but available for other models).
-
----
-
-### 5. **Dashboard & Visualization**
-- **Streamlit:** Interactive web app for data exploration, anomaly review, and graph visualization.
-- **PyVis/NetworkX:** Renders interactive network graphs for at-risk nodes and their relationships.
-
----
-
-### 6. **Red Team Simulation**
-- Injects malicious behaviors (after-hours access, mass downloads, suspicious USB usage) to test detection capability.
-
----
-
-## Summary
-This system combines unsupervised machine learning, graph theory, and explainable AI to provide a robust, interpretable approach to insider threat detection.
-''') 
