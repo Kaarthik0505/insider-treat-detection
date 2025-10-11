@@ -1,123 +1,156 @@
+# adaptive_model/adaptive_training.py
 import os
 import pandas as pd
 import numpy as np
 import joblib
 from sklearn.ensemble import IsolationForest
-from sklearn.svm import OneClassSVM
-from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 DATA_DIR = 'data'
 MODEL_DIR = 'models'
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# --- helper: normalize input for retrain_with_new_user ---
-def _normalize_retrain_args(*args, **kwargs):
+
+def _ensure_department_column(df):
+    if 'department' not in df.columns:
+        df['department'] = 'Unknown'
+    df['department'] = df['department'].fillna('Unknown')
+    return df
+
+
+def _train_isolation_per_department(df):
     """
-    Accepts either:
-      retrain_with_new_user(new_user_dict)
-    or
-      retrain_with_new_user(user_id, login_freq, files_accessed, flag)
-    Returns a normalized dict.
+    For each department present in df:
+      - train an IsolationForest on that department's feature rows,
+      - compute raw scores, MinMax-normalize per-department,
+    Returns combined scores_df with columns: user, department, isolation_forest, aggregated_score
+    and saves per-department models/scalers as isolation_forest__<dept>.pkl and scaler__<dept>.pkl
     """
-    if len(args) == 1 and isinstance(args[0], dict):
-        return args[0]
+    df = _ensure_department_column(df)
+    results = []
 
-    d = {}
-    if len(args) >= 1:
-        d["user"] = args[0]
-    if len(args) >= 2:
-        d["mean_login_hour"] = args[1]
-    if len(args) >= 3:
-        d["files_per_day"] = args[2]
-    if len(args) >= 4:
-        d["is_red_team"] = args[3]
+    for dept in sorted(df['department'].unique()):
+        df_dept = df[df['department'] == dept].reset_index(drop=True)
+        if df_dept.empty:
+            continue
 
-    for k, v in kwargs.items():
-        d[k] = v
+        # Features used for training: drop 'user' and 'department'
+        X = df_dept.drop(columns=[c for c in ['user', 'department'] if c in df_dept.columns], errors='ignore')
+        if X.shape[0] < 2 or X.shape[1] == 0:
+            # Not enough data to train properly - produce zero scores
+            iso_scores = np.zeros(len(df_dept))
+            scaler = None
+            iso_model = None
+        else:
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X)
 
-    return d
+            iso_model = IsolationForest(contamination=0.1, random_state=42)
+            iso_model.fit(Xs)
+            iso_scores = -iso_model.score_samples(Xs)
+
+            # Save model and scaler for this department (safe file names)
+            safe_dept = dept.replace(' ', '_').lower()
+            joblib.dump(iso_model, os.path.join(MODEL_DIR, f'isolation_forest__{safe_dept}.pkl'))
+            joblib.dump(scaler, os.path.join(MODEL_DIR, f'scaler__{safe_dept}.pkl'))
+
+        # Normalize iso_scores within department
+        if len(iso_scores) > 0:
+            mm = MinMaxScaler()
+            iso_norm = mm.fit_transform(np.array(iso_scores).reshape(-1, 1)).flatten()
+        else:
+            iso_norm = np.array([])
+
+        for i, user in enumerate(df_dept['user'].tolist()):
+            results.append({
+                'user': user,
+                'department': dept,
+                'isolation_forest': float(iso_norm[i]) if len(iso_norm) > i else 0.0
+            })
+
+    scores_df = pd.DataFrame(results)
+    if scores_df.empty:
+        return pd.DataFrame(columns=['user', 'department', 'isolation_forest', 'aggregated_score'])
+
+    # aggregated_score is same as isolation_forest (single model) - kept for compatibility
+    scores_df['aggregated_score'] = scores_df['isolation_forest']
+    # Save global anomaly_scores.csv
+    scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
+
+    return scores_df
 
 
-def _train_and_save_models(X):
-    """Train Isolation Forest, One-Class SVM, and Autoencoder; save models."""
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
-
-    iso = IsolationForest(contamination=0.1, random_state=42)
-    iso.fit(Xs)
-    iso_scores = -iso.score_samples(Xs)
-
-    svm = OneClassSVM(nu=0.1, kernel='rbf', gamma='scale')
-    svm.fit(Xs)
-    svm_scores = -svm.decision_function(Xs)
-
-    auto = MLPRegressor(hidden_layer_sizes=(8, 4, 8), max_iter=1000, random_state=42)
-    auto.fit(Xs, Xs)
-    auto_recon = np.mean((Xs - auto.predict(Xs)) ** 2, axis=1)
-
-    joblib.dump(iso, os.path.join(MODEL_DIR, 'isolation_forest.pkl'))
-    joblib.dump(svm, os.path.join(MODEL_DIR, 'oneclass_svm.pkl'))
-    joblib.dump(auto, os.path.join(MODEL_DIR, 'autoencoder.pkl'))
-    joblib.dump(scaler, os.path.join(MODEL_DIR, 'scaler.pkl'))
-
-    return iso_scores, svm_scores, auto_recon
-
-
-def retrain_with_new_user(*args, **kwargs):
+def retrain_with_new_user(new_user: dict):
     """
-    Dynamically retrain model when a new user is added or removed.
-    Accepts either a dict or args (user_id, login_freq, files_accessed, flag).
+    Add a new user row (dictionary must contain 'user' and 'department' keys, plus feature fields)
+    Append to merged_features.csv, retrain per-department models and update anomaly_scores.csv
+    Returns a summary dict with new user's score and department-level thresholds (q90, q70).
     """
-    new_user_row = _normalize_retrain_args(*args, **kwargs)
-
     features_path = os.path.join(DATA_DIR, 'merged_features.csv')
     if not os.path.exists(features_path):
         raise FileNotFoundError(f"{features_path} not found")
 
     df = pd.read_csv(features_path)
-    new_df = pd.DataFrame([new_user_row])
+    df = _ensure_department_column(df)
 
+    # Build new_df - ensure compatible columns
+    new_df = pd.DataFrame([new_user])
+    # If missing columns in new_df, fill numeric columns with department mean or 0, else 'unknown'
     for c in df.columns:
         if c not in new_df.columns:
-            if df[c].dtype.kind in 'biufc':
+            if df[c].dtype.kind in 'biufc':  # numeric
                 new_df[c] = df[c].mean() if not df[c].isna().all() else 0
             else:
-                new_df[c] = 'unknown' if c == 'user' else 0
+                new_df[c] = 'Unknown' if c == 'department' else ('unknown' if c == 'user' else '')
 
-    new_df = new_df[df.columns]
+    new_df = new_df[df.columns]  # align column order
     df = pd.concat([df, new_df], ignore_index=True)
     df.to_csv(features_path, index=False)
 
-    X = df.drop(columns=[c for c in ['user', 'is_red_team'] if c in df.columns], errors='ignore').copy()
+    # Retrain per department and save scores
+    scores_df = _train_isolation_per_department(df)
 
-    iso_scores, svm_scores, auto_recon = _train_and_save_models(X)
+    # compute department thresholds (q90/q70) and return new user info
+    dept = new_user.get('department', 'Unknown')
+    dept_scores = scores_df[scores_df['department'] == dept]
+    if dept_scores.empty:
+        return {
+            "user": new_user.get('user'),
+            "aggregated_score": 0.0,
+            "q90": 0.0,
+            "q70": 0.0,
+            "total_users": int(len(scores_df))
+        }
 
-    scores_df = pd.DataFrame({
-        'user': df['user'],
-        'is_red_team': df['is_red_team'] if 'is_red_team' in df.columns else 0,
-        'isolation_forest': iso_scores,
-        'oneclass_svm': svm_scores,
-        'autoencoder': auto_recon
-    })
+    q90 = float(dept_scores['aggregated_score'].quantile(0.90))
+    q70 = float(dept_scores['aggregated_score'].quantile(0.70))
+    new_row = dept_scores[dept_scores['user'] == new_user['user']].iloc[0].to_dict()
 
-    scaler = MinMaxScaler()
-    score_cols = ['isolation_forest', 'oneclass_svm', 'autoencoder']
-    scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
-    scores_df['aggregated_score'] = scores_df[score_cols].mean(axis=1)
-    scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
-
-    q90 = float(scores_df['aggregated_score'].quantile(0.90))
-    q70 = float(scores_df['aggregated_score'].quantile(0.70))
-
-    new_row = scores_df[scores_df['user'] == new_user_row['user']].iloc[0].to_dict()
-
-    # --- Return dynamic result summary ---
     return {
         "user": new_row['user'],
         "aggregated_score": float(new_row['aggregated_score']),
         "q90": q90,
         "q70": q70,
-        "total_users": len(scores_df)
+        "total_users": int(len(scores_df))
     }
 
+
+def retrain_all():
+    """
+    Retrain models using the current merged_features.csv contents.
+    Useful after deletion.
+    Returns a summary dict: number of users and departments trained.
+    """
+    features_path = os.path.join(DATA_DIR, 'merged_features.csv')
+    if not os.path.exists(features_path):
+        raise FileNotFoundError(f"{features_path} not found")
+
+    df = pd.read_csv(features_path)
+    df = _ensure_department_column(df)
+
+    scores_df = _train_isolation_per_department(df)
+
+    return {
+        "total_users": int(len(scores_df)),
+        "departments": sorted(df['department'].unique())
+    }
