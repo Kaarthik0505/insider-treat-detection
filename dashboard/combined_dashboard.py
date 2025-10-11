@@ -85,6 +85,9 @@ def compute_risk_levels(df_display):
 
     df_display['aggregated_score'] = df_display['aggregated_score'].fillna(0.0)
 
+    # ✅ Add this debug print here
+    print("Columns in df_display:", df_display.columns.tolist())
+
     # For each department compute department-local thresholds and assign risk
     df_display['Risk Level'] = '🟢 Low Risk'
     for dept in df_display['department'].fillna('Unknown').unique():
@@ -100,6 +103,7 @@ def compute_risk_levels(df_display):
         df_display.loc[mask & (df_display['aggregated_score'] < q70), 'Risk Level'] = '🟢 Low Risk'
 
     return df_display
+
 
 # -------------------- TABS --------------------
 anomaly_tab, user_tab, adaptive_tab, how_tab = st.tabs([
