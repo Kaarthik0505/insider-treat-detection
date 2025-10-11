@@ -90,6 +90,8 @@ with adaptive_tab:
             st.error("❌ Please enter a valid user ID.")
         else:
             st.info("Adding new user data and retraining model...")
+
+            # Retrain the model with the new user
             result = retrain_with_new_user({
                 "user": user_id,
                 "mean_login_hour": login_freq,
@@ -97,9 +99,26 @@ with adaptive_tab:
                 "usb_per_day": usb_count,
                 "emails_per_day": email_count,
             })
+
+            # Reload updated anomaly scores
+            updated_scores = pd.read_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'))
+
+            # Compute high risk threshold (90th percentile)
+            high_risk_threshold = updated_scores['isolation_forest'].quantile(0.90)
+
+            # Get the new user's anomaly score
+            new_user_score = updated_scores.loc[
+                updated_scores['user'] == user_id, 'isolation_forest'
+        ]   .values[0]
+
+            # 🚨 Alert only if HIGH RISK
+            if new_user_score >= high_risk_threshold:
+                st.error(f"🚨 ALERT: New user `{user_id}` is flagged as HIGH RISK (🔴)! Immediate review recommended.")
+
             st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
             st.json(result)
             st.rerun()
+
 
     # Remove User
     st.subheader("🗑 Remove Existing User")
