@@ -176,40 +176,81 @@ with adaptive_tab:
         if not new_user['user'] or new_user['user'].strip() == "":
             st.error("Please enter a valid user id.")
         else:
-            st.info("Adding user and retraining models (per-department)...")
-            result = retrain_with_new_user(new_user)
-            st.success(f"Model retrained. New user `{result['user']}` aggregated score: {result['aggregated_score']:.3f}")
-            st.write(f"Department thresholds (aggregated score): q90={result['q90']:.3f}, q70={result['q70']:.3f}")
-            # reload data in memory
-            features, scores = load_all_data()
-            if not scores.empty and not features.empty:
-                df = pd.merge(features, scores, on='user', how='left')
-            else:
-                df = features.copy()
+            st.info("Adding new user data and retraining model...")
 
+            # Retrain the model with the new user
+            result = retrain_with_new_user({
+                "user": user_id,
+                "mean_login_hour": login_freq,
+                "files_per_day": files_accessed,
+                "usb_per_day": usb_count,
+                "emails_per_day": email_count,
+            })
+
+            # Reload updated anomaly scores
+            updated_scores = pd.read_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'))
+
+            # Compute high risk threshold (90th percentile)
+            high_risk_threshold = updated_scores['isolation_forest'].quantile(0.90)
+
+            # Get the new user's anomaly score
+            new_user_score = updated_scores.loc[
+                updated_scores['user'] == user_id, 'isolation_forest'
+            ].values[0]
+
+            # 🚨 Popup alert for HIGH RISK user
+            if new_user_score >= high_risk_threshold:
+                st.toast(
+                    f"🚨 ALERT: New user `{user_id}` is HIGH RISK (🔴)! Immediate review recommended.",
+                    icon="⚠️",
+                    duration=5000
+                )
+
+            st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
+            st.json(result)
+            st.rerun()
+
+
+    # Remove User
     st.subheader("🗑 Remove Existing User")
     try:
-        features_path = os.path.join(DATA_DIR, "merged_features.csv")
-        if os.path.exists(features_path):
-            df_features = pd.read_csv(features_path)
-            if 'department' not in df_features.columns:
-                df_features['department'] = 'Unknown'
-            dept_remove = st.selectbox("Select Department to manage", sorted(df_features['department'].unique()))
-            users_in_dept = df_features[df_features['department'] == dept_remove]['user'].tolist()
-            user_to_remove = st.selectbox("Select User to remove", users_in_dept)
-            if st.button("Remove selected user"):
-                df_features = df_features[df_features['user'] != user_to_remove]
-                df_features.to_csv(features_path, index=False)
-                st.success(f"Removed user `{user_to_remove}`. Retraining models...")
-                # retrain all to update anomaly_scores
-                summary = retrain_all()
-                st.write(f"Retrained. Total users now: {summary['total_users']}")
-                # reload data in memory
-                features, scores = load_all_data()
-                if not scores.empty and not features.empty:
-                    df = pd.merge(features, scores, on='user', how='left')
-                else:
-                    df = features.copy()
+        users_list = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))["user"].tolist()
+        user_to_remove = st.selectbox("Select User to Remove", users_list)
+        if st.button("🚫 Remove Selected User"):
+            features_df = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))
+            scores_df = pd.read_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"))
+
+            if user_to_remove in features_df["user"].values:
+                features_df = features_df[features_df["user"] != user_to_remove]
+                features_df.to_csv(os.path.join(DATA_DIR, "merged_features.csv"), index=False)
+            if user_to_remove in scores_df["user"].values:
+                scores_df = scores_df[scores_df["user"] != user_to_remove]
+                scores_df.to_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"), index=False)
+
+            st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
+
+            if not features_df.empty:
+                from adaptive_model.adaptive_training import _train_and_save_models
+                import numpy as np
+                from sklearn.preprocessing import MinMaxScaler
+
+                X = features_df.drop(columns=[c for c in ['user'] if c in features_df.columns], errors='ignore')
+                iso_scores, _, _ = _train_and_save_models(X)  # only use isolation forest returned scores
+
+                scores_df = pd.DataFrame({
+                    'user': features_df['user'],
+                    'isolation_forest': iso_scores
+                })
+
+                scaler = MinMaxScaler()
+                score_cols = ['isolation_forest']
+                scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
+                scores_df['aggregated_score'] = scores_df[score_cols].mean(axis=1)
+                scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
+
+                st.success("✅ Model retrained successfully after deletion.")
+            st.rerun()
+
     except Exception as e:
         st.error(f"Error while removing user: {e}")
 
