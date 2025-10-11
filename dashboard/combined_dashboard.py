@@ -109,11 +109,15 @@ with adaptive_tab:
             # Get the new user's anomaly score
             new_user_score = updated_scores.loc[
                 updated_scores['user'] == user_id, 'isolation_forest'
-        ]   .values[0]
+            ].values[0]
 
-            # 🚨 Alert only if HIGH RISK
+            # 🚨 Popup alert for HIGH RISK user
             if new_user_score >= high_risk_threshold:
-                st.error(f"🚨 ALERT: New user `{user_id}` is flagged as HIGH RISK (🔴)! Immediate review recommended.")
+                st.toast(
+                    f"🚨 ALERT: New user `{user_id}` is HIGH RISK (🔴)! Immediate review recommended.",
+                    icon="⚠️",
+                    duration=5000
+                )
 
             st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
             st.json(result)
@@ -141,6 +145,7 @@ with adaptive_tab:
             if not features_df.empty:
                 from adaptive_model.adaptive_training import _train_and_save_models
                 import numpy as np
+                from sklearn.preprocessing import MinMaxScaler
 
                 X = features_df.drop(columns=[c for c in ['user'] if c in features_df.columns], errors='ignore')
                 iso_scores, _, _ = _train_and_save_models(X)  # only use isolation forest returned scores
@@ -150,7 +155,6 @@ with adaptive_tab:
                     'isolation_forest': iso_scores
                 })
 
-                from sklearn.preprocessing import MinMaxScaler
                 scaler = MinMaxScaler()
                 score_cols = ['isolation_forest']
                 scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
