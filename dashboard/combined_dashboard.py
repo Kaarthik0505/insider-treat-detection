@@ -3,7 +3,9 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import os
-from adaptive_model.adaptive_training import retrain_with_new_user
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from adaptive_model.adaptive_training import retrain_with_new_user, _train_and_save_models
 
 DATA_DIR = 'data'
 
@@ -136,34 +138,58 @@ with graph_tab:
 
 # === ADAPTIVE LEARNING TAB ===
 with adaptive_tab:
-    st.header("🧠 Adaptive Learning Module")
-
-    # Add User
+    # --- Add User Section ---
     st.subheader("➕ Add New User Data")
-    user_id = st.text_input("Enter User ID (e.g., user_101)")
-    login_freq = st.number_input("Average Login Hour", min_value=0.0, max_value=24.0, value=9.0)
-    files_accessed = st.number_input("Files Accessed Per Day", min_value=0, max_value=1000, value=20)
-    suspicious_activity = st.selectbox("Suspicious Behavior?", ["No", "Yes"])
-    flag = 1 if suspicious_activity == "Yes" else 0
 
-    if st.button("📥 Add User and Retrain Model"):
-        if not user_id.strip():
+    with st.form("add_user_form"):
+        user_id = st.text_input("Enter User ID (e.g., user_101)")
+        login_freq = st.number_input("Average Login Hour", min_value=0.0, max_value=24.0, value=9.0)
+        files_accessed = st.number_input("Files Accessed Per Day", min_value=0, max_value=1000, value=20)
+        usb_usage = st.number_input("USB Connections Per Day", min_value=0, max_value=50, value=0)
+        emails_sent = st.number_input("Emails Sent Per Day", min_value=0, max_value=500, value=0)
+
+        submitted = st.form_submit_button("📥 Add User and Retrain Model")
+
+    if submitted:
+        if user_id.strip() == "":
             st.error("❌ Please enter a valid user ID.")
         else:
             st.info("Adding new user data and retraining model...")
+
             result = retrain_with_new_user({
                 "user": user_id,
                 "mean_login_hour": login_freq,
                 "files_per_day": files_accessed,
-                "usb_per_day": 0,
-                "emails_per_day": 0,
-                "is_red_team": flag
+                "usb_per_day": usb_usage,
+                "emails_per_day": emails_sent,
+                "is_red_team": 0
             })
+
             st.success(f"✅ Model retrained successfully with new user `{user_id}`!")
+            st.write("### 🔍 Updated Model Performance:")
             st.json(result)
+
+            updated_scores = pd.read_csv(os.path.join(DATA_DIR, "anomaly_scores.csv"))
+            if user_id in updated_scores["user"].values:
+                user_row = updated_scores[updated_scores["user"] == user_id].iloc[0]
+                score = user_row["aggregated_score"]
+                q90 = result["q90"]
+                q70 = result["q70"]
+
+                if score >= q90:
+                    risk = "🔴 High Risk"
+                elif score >= q70:
+                    risk = "🟡 Medium Risk"
+                else:
+                    risk = "🟢 Low Risk"
+
+                st.markdown(f"### 🚨 New User `{user_id}` Risk Prediction: **{risk}**")
+                st.progress(float(score))
+
+            st.success("✅ Dashboard and Anomaly Table updated successfully!")
             st.rerun()
 
-    # Remove User
+    # --- Remove User Section ---
     st.subheader("🗑 Remove Existing User")
     try:
         users_list = pd.read_csv(os.path.join(DATA_DIR, "merged_features.csv"))["user"].tolist()
@@ -182,10 +208,6 @@ with adaptive_tab:
             st.success(f"🗑 User `{user_to_remove}` removed successfully. Retraining model...")
 
             if not features_df.empty:
-                # 🔁 Retrain using existing data, not by adding a new row
-                from adaptive_model.adaptive_training import _train_and_save_models
-                import numpy as np
-
                 X = features_df.drop(columns=[c for c in ['user', 'is_red_team'] if c in features_df.columns], errors='ignore')
                 iso_scores, svm_scores, auto_recon = _train_and_save_models(X)
 
@@ -197,14 +219,12 @@ with adaptive_tab:
                     'autoencoder': auto_recon
                 })
 
-                from sklearn.preprocessing import MinMaxScaler
                 scaler = MinMaxScaler()
                 score_cols = ['isolation_forest', 'oneclass_svm', 'autoencoder']
                 scores_df[score_cols] = scaler.fit_transform(scores_df[score_cols])
                 scores_df['aggregated_score'] = scores_df[score_cols].mean(axis=1)
                 scores_df.to_csv(os.path.join(DATA_DIR, 'anomaly_scores.csv'), index=False)
 
-                st.success("✅ Model retrained successfully after deletion.")
             st.rerun()
 
     except Exception as e:
@@ -214,6 +234,11 @@ with adaptive_tab:
 with how_tab:
     st.header('How Does It Work?')
     st.markdown('''
+    - Uses multiple ML models (Isolation Forest, One-Class SVM, Autoencoder)
+    - Combines anomaly scores and flags high-risk users
+    - Adaptive learning allows retraining when new user data arrives
+    - Graph shows relationships among at-risk users and assets
+
     The dashboard dynamically updates anomaly scores using Isolation Forest, One-Class SVM, and Autoencoder models.
     Adding or removing a user automatically retrains models and rescales risk thresholds.
 
