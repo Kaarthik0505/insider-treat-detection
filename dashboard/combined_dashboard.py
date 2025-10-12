@@ -109,7 +109,14 @@ with anomaly_tab:
     if selected_department != "All":
         df_display = df_display[df_display["department"] == selected_department].copy()
 
+    # Ensure 'department' column exists before computing risk
+    if 'department' not in df_display.columns:
+        st.warning("⚠️ 'department' column missing. Setting all to 'Unknown'.")
+        df_display['department'] = 'Unknown'
+
+# Compute risk levels per department
     df_display = compute_risk_levels(df_display)
+
 
     feature_cols = ["mean_login_hour", "files_per_day", "usb_per_day", "emails_per_day"]
     show_cols = ["user", "department", "aggregated_score", "Risk Level"] + [c for c in feature_cols if c in df_display.columns]
